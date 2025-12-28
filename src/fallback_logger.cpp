@@ -1,88 +1,97 @@
 #include "fallback_logger.hpp"
 #include <iostream>
 #include <fstream>
-#include <vector>
-#include <mutex>
 #include <chrono>
 #include <thread>
+#include <vector>
 
 class FallbackLogger {
 private:
+    std::string log_file_path;
     std::ofstream log_file;
-    std::mutex log_mutex;
     bool is_logging;
-    std::string log_filename;
-    std::vector<std::string> message_buffer;
-
-    void logMessage(const std::string& message) {
-        std::lock_guard<std::mutex> guard(log_mutex);
-        if (!is_logging) {
-            std::cerr << "Warning: Attempt to log message but logging is not active." << std::endl;
-            return;
-        }
-
-        if (!log_file.is_open()) {
-            std::cerr << "Error: Log file is closed unexpectedly." << std::endl;
-            return;
-        }
-
-        log_file << message << std::endl;
-        message_buffer.push_back(message);
-    }
+    std::vector<std::string> log_buffer;
+    size_t max_buffer_size;
 
 public:
-    FallbackLogger(const std::string& filename) : is_logging(false), log_filename(filename) {}
+    FallbackLogger(const std::string& file_path, size_t buffer_size)
+        : log_file_path(file_path), is_logging(false), max_buffer_size(buffer_size) {}
 
-    void startLogging() {
+    ~FallbackLogger() {
         if (is_logging) {
-            std::cerr << "Warning: Logging is already started." << std::endl;
-            return;
+            stop_logging(); // Ensure to stop logging on destruction
         }
-
-        log_file.open(log_filename, std::ios::app);
-        if (!log_file.is_open()) {
-            std::cerr << "Error: Failed to open log file!" << std::endl;
-            return;
-        }
-        
-        is_logging = true;
-        std::cout << "Logging started. Writing to " << log_filename << std::endl;
     }
 
-    void stopLogging() {
+    bool start_logging() {
+        if (is_logging) {
+            std::cerr << "Logging is already started!" << std::endl;
+            return false;
+        }
+        log_file.open(log_file_path, std::ios::out | std::ios::app);
+        if (!log_file.is_open()) {
+            std::cerr << "Failed to open log file: " << log_file_path << std::endl;
+            return false;
+        }
+        is_logging = true;
+        return true;
+    }
+
+    void log_message(const std::string& message) {
         if (!is_logging) {
-            std::cerr << "Warning: Logging was not started." << std::endl;
+            std::cerr << "Cannot log message, logging is not started." << std::endl;
             return;
         }
+        log_buffer.push_back(message);
+        if (log_buffer.size() >= max_buffer_size) {
+            flush_log_buffer();
+        }
+    }
 
-        is_logging = false;
+    void stop_logging() {
+        if (!is_logging) {
+            std::cerr << "Logging is already stopped!" << std::endl;
+            return;
+        }
+        flush_log_buffer();
         if (log_file.is_open()) {
             log_file.close();
-            std::cout << "Logging stopped. File closed." << std::endl;
-        } else {
-            std::cerr << "Error: Log file was not open during stop attempt." << std::endl;
         }
+        is_logging = false;
     }
 
-    void logMAVLinkMessage(const std::string& message) {
-        logMessage(message);
+    // Improved: Make flush_log_buffer check file open status
+    void flush_log_buffer() {
+        if (!log_file.is_open()) {
+            std::cerr << "Log file is not open. Unable to flush buffer." << std::endl;
+            return;
+        }
+        for (const auto& msg : log_buffer) {
+            log_file << time_stamp() << " - " << msg << std::endl; // Timestamp each log entry
+        }
+        log_buffer.clear();
     }
 
-    void summarizeLogs() {
-        std::lock_guard<std::mutex> guard(log_mutex);
-        std::cout << "Log Summary: Recorded " << message_buffer.size() << " messages." << std::endl;
+private:
+    std::string time_stamp() const {
+        auto now = std::chrono::system_clock::now();
+        auto now_c = std::chrono::system_clock::to_time_t(now);
+        tm local_tm;
+        localtime_s(&local_tm, &now_c);
+        char buffer[100];
+        strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", &local_tm);
+        return std::string(buffer);
     }
 };
 
-// Sample usage of the FallbackLogger
-// Uncomment below for testing purposes
-// int main() {
-//     FallbackLogger logger("mavlink_fallback.log");
-//     logger.startLogging();
-//     logger.logMAVLinkMessage("Heartbeat: vehicle_id=1, type=1");
-//     std::this_thread::sleep_for(std::chrono::seconds(1));
-//     logger.logMAVLinkMessage("Status: ready");
-//     logger.summarizeLogs();
-//     logger.stopLogging();
-//     return 0;
-// }
+// Example function to simulate fallback logging behavior
+void fallback_logging_example() {
+    FallbackLogger logger("mavlink_fallback_log.txt", 10);
+    if (logger.start_logging()) {
+        for (int i = 0; i < 25; ++i) {
+            logger.log_message("MAVLink message #: " + std::to_string(i));
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        logger.stop_logging();
+    }
+}
